@@ -1,0 +1,4 @@
+add_executable(randomaccessiteratorincludestests
+	randomaccessiteratorincludestests.cpp)
+target_link_libraries(randomaccessiteratorincludestests PRIVATE gtest_main)
+add_test(NAME randomaccessiteratorincludes COMMAND randomaccessiteratorincludestests)

@@ -1,0 +1,3 @@
+[submodule "src/matteoutils"]
+	path = src/matteoutils_git
+	url = git@github.com:rionda/matteoutils.git

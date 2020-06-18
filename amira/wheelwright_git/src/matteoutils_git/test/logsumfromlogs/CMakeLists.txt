@@ -1,0 +1,3 @@
+add_executable(logsumfromlogstests logsumfromlogstests.cpp)
+target_link_libraries(logsumfromlogstests PRIVATE gtest_main)
+add_test(NAME logsumfromlogs COMMAND logsumfromlogstests)

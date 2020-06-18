@@ -1,0 +1,202 @@
+diff --git a/exper/newcode/amira.cpp b/exper/newcode/amira.cpp
+index 9fb48db..7839446 100644
+--- a/exper/newcode/amira.cpp
++++ b/exper/newcode/amira.cpp
+@@ -44,8 +44,9 @@
+ void usage(const char *binary, const int code) {
+     std::cerr << binary << ": run AMIRA with a fixed sample size" << std::endl
+         << "USAGE: " << binary
+-        << " [-c] [-d dataset_size] [-fh] [-jnp] [-s sample] [-v] "
+-        "failure_probability minimum_frequency sample_size dataset" << std::endl
++        << " [-c] [-d dataset_size] [-fh] [-i ignore_frequency] [-jnp] "
++        "[-s sample] [-v] failure_probability minimum_frequency sample_size "
++        "dataset" << std::endl
+         << "\t-c : print the closed frequent itemsets, rather than the "
+         "frequent ones" << std::endl
+         << "\t-f : print full information about the run at the end" << std::endl
+@@ -68,12 +69,13 @@ int main(int argc, char** argv) {
+     bool printclosed {false};
+     bool skipsecond {false};
+     bool verbose {false};
++    double ignore_freq {0};
+     amira::count ds_size {0};
+     std::string outf;
+     char opt;
+     extern char *optarg;
+     extern int optind;
+-    while ((opt = getopt(argc, argv, "cd:fhjnps:v")) != -1) {
++    while ((opt = getopt(argc, argv, "cd:fhi:jnps:v")) != -1) {
+         switch (opt) {
+             case 'c':
+                 printclosed = true;
+@@ -92,6 +94,14 @@ int main(int argc, char** argv) {
+             case 'h':
+                 usage(argv[0], EXIT_SUCCESS);
+                 break;
++            case 'i':
++                ignore_freq = std::strtod(optarg, NULL);
++                if (errno == ERANGE || ignore_freq == 0 || ignore_freq >= 1) {
++                    std::cerr << "Error: ignore_freq must be a real in [0,1)"
++                        << std::endl;
++                    return EXIT_FAILURE;
++                }
++                break;
+             case 'j':
+                 json = true;
+                 break;
+@@ -169,6 +179,11 @@ int main(int argc, char** argv) {
+     // omega1 and rho1, but implementation-wise, it is easier to populate the
+     // structure in create_sample.
+     try {
++        // TODO: we should pass ignore_freq to create_sample, because it is
++        // needed to correctly compute the bounds. The current computation is
++        // wrong.
++        // We should also make it possible to select whether to include support
++        // for include_freq or not at compile time.
+         amira::create_sample(dataset, ds_size, size, sample, item_infos);
+     } catch (std::runtime_error &e) {
+         std::cerr << "Error: " << e.what() << std::endl;
+@@ -192,7 +207,7 @@ int main(int argc, char** argv) {
+     const auto rho1_start {std::chrono::system_clock::now()};
+     amira::EraEps item_er; // stores omega1 and rho1
+     try {
+-        amira::compute_eraeps(delta, size, item_infos, item_er);
++        amira::compute_eraeps(delta, size, item_infos, ignore_freq, item_er);
+     } catch (const std::runtime_error &e) {
+         std::cerr << "Error: " << e.what() << std::endl;
+         return EXIT_FAILURE;
+@@ -206,6 +221,8 @@ int main(int argc, char** argv) {
+     double freq1 {theta - item_er.eps};
+     if (freq1 <= 0)
+         freq1 = 1.0 / size;
++    if (freq1 < ignore_freq)
++        freq1 = ignore_freq;
+     if (verbose)
+         std::cerr << freq1 << "...";
+     const amira::count supp1 {
+@@ -232,10 +249,13 @@ int main(int argc, char** argv) {
+         goto output;
+     if (verbose)
+         std::cerr << "Computing omega2 and rho2...";
+-    // Add to q the items that are not frequent wrt freq1
++    // Add to q the items that are not frequent wrt freq1, but have frequency
++    // greater than ignore_freq
+     {
++        const amira::count ignore_supp {static_cast<amira::count>(
++                std::ceil(size * ignore_freq))};
+         for (const auto &ii : item_infos)
+-            if (ii.second.sp < supp1)
++            if (ii.second.sp < supp1 && ii.second.sp >= ignore_supp)
+                 // We cannot reuse ii.second because its g and h are already
+                 // populated, while we want ``vanilla' ones.
+                 q.emplace(amira::itemset({ii.first}),
+@@ -282,9 +302,7 @@ int main(int argc, char** argv) {
+     }
+     // Compute omega2 and rho2
+     try {
+-        const amira::count supp1_minus1 {supp1 - 1};
+-        auto data {std::tie(supp1_minus1, std::as_const(q))};
+-        amira::compute_eraeps(delta, size, data, itemset_er);
++        amira::compute_eraeps(delta, size, q, freq1, itemset_er);
+     } catch (const std::runtime_error &e) {
+         std::cerr << "Error: " << e.what() << std::endl;
+         return EXIT_FAILURE;
+@@ -351,6 +369,7 @@ output:
+             << tab << "samplesize: " << size << comma << std::endl
+             << tab << "minimum_frequency: " << theta << comma << std::endl
+             << tab << "failure_probability: " << delta << comma << std::endl
++            << tab << "ignore_frequency: " << ignore_freq << comma << std::endl
+             << tab << "printclosed: " << ((printclosed) ? 1 : 0) << comma
+             << std::endl
+             << tab << "skipsecond: " << ((skipsecond) ? 1 : 0) << comma
+diff --git a/exper/newcode/epsilon.h b/exper/newcode/epsilon.h
+index b277517..b847873 100644
+--- a/exper/newcode/epsilon.h
++++ b/exper/newcode/epsilon.h
+@@ -54,10 +54,14 @@ namespace impl {
+ // bound to the empirical Rademacher average (also known as omega1).
+ inline double items_objective(const std::vector<double> &x,
+         std::vector<double> &, void *data) {
+-    const auto &infos {*(static_cast<std::map<item,ItemsetInfo>*>(data))};
++    auto& [ignore_supp, infos] {*(
++            static_cast<std::tuple<count const &,
++            std::map<item,ItemsetInfo> const &>*>( data))};
+     const auto lncoshx {MatteoUtils::logcosh(x[0])};
+     MatteoUtils::LogSumFromLogs sum {std::numeric_limits<double>::lowest()};
+     for (const auto &info : infos) {
++        if (info.second.sp < ignore_supp)
++            continue;
+         const auto &h {info.second.h};
+         sum += info.second.sp * lncoshx;
+         for (const auto &gv : info.second.g) {
+@@ -134,11 +138,11 @@ inline double itemset_objective(const std::vector<double> &x,
+ } // namespace impl
+ 
+ template<class T> void compute_eraeps(const double d, const count size,
+-        T &data, EraEps &res, typename std::enable_if_t<
++        const T &infos, double ignore_or_mine_freq, EraEps &res,
++        typename std::enable_if_t<
+         std::is_same<T, std::map<item,ItemsetInfo>>::value ||
+-        std::is_same<T, std::tuple<count const &,
+-                std::set<amira::ItemsetWithInfo,
+-                amira::SuppThenInvByLengthComp> const &>>::value,
++        std::is_same<T,
++            std::set<ItemsetWithInfo, SuppThenInvByLengthComp>>::value,
+             bool> = false) {
+     // Use the infos to compute the upper bound for the Rademacher average.
+     // Most of the following code comes from Wheelwright.
+@@ -159,24 +163,40 @@ template<class T> void compute_eraeps(const double d, const count size,
+     // Set initialization point. The choice of '2' is somewhat arbitrary.
+     std::vector<double> x {2.0};
+     double objval {0};
++    // Create auxiliary data and do the minimization
+     if constexpr (std::is_same<T, std::map<item,ItemsetInfo>>::value) {
++        // ceil to use < in items_objective
++        const amira::count ignore_supp {static_cast<amira::count>(
++            std::ceil(size * ignore_or_mine_freq))};
++        auto ignoresupp_and_infos {std::tie(ignore_supp, infos)};
+         opt_prob.set_min_objective(impl::items_objective,
+-                &data);
++                &ignoresupp_and_infos);
++        try {
++            opt_prob.optimize(x, objval);
++        } catch (const std::runtime_error &e) {
++            std::stringstream ss;
++            ss << "Error in the optimization: either a generic NLopt failure or "
++                "the objective function computation threw a std::runtime_error. "
++                "The message was: " << e.what();
++            throw std::runtime_error(ss.str());
++        }
+     } else if constexpr (std::is_same<T,
+-            std::tuple<count const &,
+-                std::set<amira::ItemsetWithInfo,
+-                amira::SuppThenInvByLengthComp> const &>>::value) {
++            std::set<ItemsetWithInfo, SuppThenInvByLengthComp>>::value) {
++        const amira::count mine_supp {static_cast<amira::count>(
++            std::ceil(size * ignore_or_mine_freq)) - 1};
++        auto minesupp_and_infos {std::tie(mine_supp,
++                infos)};
+         opt_prob.set_min_objective(impl::itemset_objective,
+-                &data);
+-    }
+-    try {
+-        opt_prob.optimize(x, objval);
+-    } catch (const std::runtime_error &e) {
+-        std::stringstream ss;
+-        ss << "Error in the optimization: either a generic NLopt failure or "
+-            "the objective function computation threw a std::runtime_error. "
+-            "The message was: " << e.what();
+-        throw std::runtime_error(ss.str());
++                &minesupp_and_infos);
++        try {
++            opt_prob.optimize(x, objval);
++        } catch (const std::runtime_error &e) {
++            std::stringstream ss;
++            ss << "Error in the optimization: either a generic NLopt failure or "
++                "the objective function computation threw a std::runtime_error. "
++                "The message was: " << e.what();
++            throw std::runtime_error(ss.str());
++        }
+     }
+     // Divide by size because objective() computes the objective value
+     // multiplied by the sample size.

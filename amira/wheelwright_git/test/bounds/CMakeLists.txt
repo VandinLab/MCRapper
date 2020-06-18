@@ -1,0 +1,10 @@
+add_executable(boundstests boundstests.cpp)
+target_link_libraries(boundstests gtest_main)
+target_compile_definitions(boundstests PUBLIC "WHEELWRIGHT_OPT_DEBUG")
+add_test(NAME bounds COMMAND boundstests)
+
+add_executable(boundstests-inv boundstests.cpp)
+target_link_libraries(boundstests-inv gtest_main)
+target_compile_definitions(boundstests-inv PUBLIC "WHEELWRIGHT_OPT_DEBUG")
+target_compile_definitions(boundstests-inv PUBLIC "WHEELWRIGHT_INVARIANTS")
+add_test(NAME bounds-inv COMMAND boundstests-inv)

@@ -1,0 +1,3 @@
+add_executable(missingmathtests missingmathtests.cpp)
+target_link_libraries(missingmathtests PRIVATE gtest_main)
+add_test(NAME missingmath COMMAND missingmathtests)
